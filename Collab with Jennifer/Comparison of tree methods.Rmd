@@ -1,0 +1,89 @@
+---
+title: "Comparison of different tree-based methods"
+author: "Qi Wang"
+date: "`r Sys.Date()`"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(readxl)
+full_dat = read_xlsx("2024-03-25_datasplit.xlsx")
+train_dat = full_dat[which(full_dat$TestSet == 0), -c(10,12)]
+test_dat = full_dat[which(full_dat$TestSet == 1), -c(10,12)]
+```
+
+# XGBoost
+```{r}
+library(xgboost)
+set.seed(1024)
+
+x_train = train_dat[, -ncol(train_dat)]
+y_train = train_dat$icans_grade_3plus
+options(na.action='na.pass')
+x_train_df = model.matrix(~.-1, data = x_train)
+xgb_df = xgb.DMatrix(data = x_train_df, label = y_train)
+
+xgboost_para_tune = expand.grid(max_depth = c(3,5,7),
+                                eta = c(0.1,0.3,0.5),
+                                subsample = c(0.6, 0.8, 1),
+                                colsample_bytree = c(0.6, 0.8, 1),
+                                test_error = 0,
+                                round = 0)
+for(iter in 1:nrow(xgboost_para_tune)){
+  params = list(max_depth = xgboost_para_tune$max_depth[iter],
+                eta = xgboost_para_tune$eta[iter],
+                subsample = xgboost_para_tune$subsample[iter],
+                colsample_bytree = xgboost_para_tune$colsample_bytree[iter])
+  bst = xgb.cv(params = params,
+             data = xgb_df, nrounds = 500,
+             objective = "binary:logistic", early_stopping_rounds = 10,
+             metrics = "error",
+             nfold = 5,
+             maximize = FALSE,
+             verbose = FALSE)
+  xgboost_para_tune$test_error[iter] = min(bst$evaluation_log$test_error_mean)
+  xgboost_para_tune$round[iter] = which.min(bst$evaluation_log$test_error_mean)
+}
+
+xgboost_para_tune[which.min(xgboost_para_tune$test_error),]
+
+bst_optimal = xgboost(data = xgb_df,
+                      nrounds = xgboost_para_tune$round[which.min(xgboost_para_tune$test_error)],
+                      max.depth = xgboost_para_tune$max_depth[which.min(xgboost_para_tune$test_error)],
+                      eta = xgboost_para_tune$eta[which.min(xgboost_para_tune$test_error)],
+                      subsample = xgboost_para_tune$subsample[which.min(xgboost_para_tune$test_error)],
+                      colsample.bytree = xgboost_para_tune$colsample_bytree[which.min(xgboost_para_tune$test_error)],
+                      objective = "binary:logistic")
+
+y_test_pred = as.integer(predict(bst_optimal, newdata = model.matrix(~.-1, test_dat[,-ncol(test_dat)])) > 0.5)
+acc = mean(y_test_pred == test_dat$icans_grade_3plus)
+
+boot_acc = NULL
+for(j in 1:1000){
+  boot_idx = sample((1:nrow(test_dat)), nrow(test_dat), replace = TRUE)
+  boot_acc[j] = mean(y_test_pred[boot_idx] == test_dat$icans_grade_3plus[boot_idx])
+}
+quantile(boot_acc, c(0.025, 0.975))
+```
+
+# BART
+```{r}
+library(bartMachine)
+set.seed(1024)
+bart_cv = bartMachineCV(X = x_train, y = as.factor(y_train),
+                        k_folds = 5, use_missing_data = TRUE)
+y_test_pred_bart = as.integer(predict(bart_cv, new_data = test_dat[,-ncol(test_dat)])> 0.5)
+
+acc_bart = mean(y_test_pred_bart == test_dat$icans_grade_3plus)
+
+boot_acc_bart = NULL
+for(j in 1:1000){
+  boot_idx = sample((1:nrow(test_dat)), nrow(test_dat), replace = TRUE)
+  boot_acc_bart[j] = mean(y_test_pred_bart[boot_idx] == test_dat$icans_grade_3plus[boot_idx])
+}
+quantile(boot_acc_bart, c(0.025, 0.975))
+```
