@@ -19,9 +19,12 @@ test_dat = full_dat[which(full_dat$TestSet == 1), -c(10,12)]
 # XGBoost
 ```{r}
 library(xgboost)
+library(pROC)
+library(epiR)
 set.seed(1024)
 
 x_train = train_dat[, -ncol(train_dat)]
+# x_train$productInfusedBinaryBrexucel = as.factor(x_train$productInfusedBinaryBrexucel)
 y_train = train_dat$icans_grade_3plus
 options(na.action='na.pass')
 x_train_df = model.matrix(~.-1, data = x_train)
@@ -31,7 +34,7 @@ xgboost_para_tune = expand.grid(max_depth = c(3,5,7),
                                 eta = c(0.1,0.3,0.5),
                                 subsample = c(0.6, 0.8, 1),
                                 colsample_bytree = c(0.6, 0.8, 1),
-                                test_error = 0,
+                                test_auc = 0,
                                 round = 0)
 for(iter in 1:nrow(xgboost_para_tune)){
   params = list(max_depth = xgboost_para_tune$max_depth[iter],
@@ -41,49 +44,266 @@ for(iter in 1:nrow(xgboost_para_tune)){
   bst = xgb.cv(params = params,
              data = xgb_df, nrounds = 500,
              objective = "binary:logistic", early_stopping_rounds = 10,
-             metrics = "error",
+             metrics = "auc",
              nfold = 5,
-             maximize = FALSE,
+             maximize = TRUE,
              verbose = FALSE)
-  xgboost_para_tune$test_error[iter] = min(bst$evaluation_log$test_error_mean)
-  xgboost_para_tune$round[iter] = which.min(bst$evaluation_log$test_error_mean)
+  xgboost_para_tune$test_auc[iter] = bst$evaluation_log$test_auc_mean[bst$best_iteration]
+  xgboost_para_tune$round[iter] = bst$best_iteration
 }
 
-xgboost_para_tune[which.min(xgboost_para_tune$test_error),]
+xgboost_para_tune[which.max(xgboost_para_tune$test_auc),]
 
 bst_optimal = xgboost(data = xgb_df,
-                      nrounds = xgboost_para_tune$round[which.min(xgboost_para_tune$test_error)],
-                      max.depth = xgboost_para_tune$max_depth[which.min(xgboost_para_tune$test_error)],
-                      eta = xgboost_para_tune$eta[which.min(xgboost_para_tune$test_error)],
-                      subsample = xgboost_para_tune$subsample[which.min(xgboost_para_tune$test_error)],
-                      colsample.bytree = xgboost_para_tune$colsample_bytree[which.min(xgboost_para_tune$test_error)],
+                      nrounds = xgboost_para_tune$round[which.max(xgboost_para_tune$test_auc)],
+                      max.depth = xgboost_para_tune$max_depth[which.max(xgboost_para_tune$test_auc)],
+                      eta = xgboost_para_tune$eta[which.max(xgboost_para_tune$test_auc)],
+                      subsample = xgboost_para_tune$subsample[which.max(xgboost_para_tune$test_auc)],
+                      colsample.bytree = xgboost_para_tune$colsample_bytree[which.max(xgboost_para_tune$test_auc)],
                       objective = "binary:logistic")
+y_test_pred_xgb = predict(bst_optimal, newdata = model.matrix(~.-1, test_dat[,-ncol(test_dat)]))
+roc_xgb = roc(test_dat$icans_grade_3plus, y_test_pred_xgb)
+roc_xgb$auc
+ci.auc(roc_xgb, method = "bootstrap")
 
-y_test_pred = as.integer(predict(bst_optimal, newdata = model.matrix(~.-1, test_dat[,-ncol(test_dat)])) > 0.5)
-acc = mean(y_test_pred == test_dat$icans_grade_3plus)
 
-boot_acc = NULL
-for(j in 1:1000){
-  boot_idx = sample((1:nrow(test_dat)), nrow(test_dat), replace = TRUE)
-  boot_acc[j] = mean(y_test_pred[boot_idx] == test_dat$icans_grade_3plus[boot_idx])
-}
-quantile(boot_acc, c(0.025, 0.975))
+y_train_pred_xgb = predict(bst_optimal, newdata = x_train_df)
+roc_train_xgb = roc(train_dat$icans_grade_3plus, y_train_pred_xgb)
+roc_train_xgb$auc
+ci.auc(roc_train_xgb, method = "bootstrap")
+
+opt_thre_xgb = roc_train_xgb$thresholds[which.max(roc_train_xgb$sensitivities + roc_train_xgb$specificities)]
+y_test_pred_label_xgb = as.integer(y_test_pred_xgb > opt_thre_xgb)
+epi.tests(table(y_test_pred_label_xgb, test_dat$icans_grade_3plus)[2:1,2:1], digits = 3)
+
+y_train_pred_label_xgb = as.integer(y_train_pred_xgb > opt_thre_xgb)
+epi.tests(table(y_train_pred_label_xgb, train_dat$icans_grade_3plus)[2:1,2:1], digits = 3)
+
+
+# y_test_pred = as.integer(predict(bst_optimal, newdata = model.matrix(~.-1, test_dat[,-ncol(test_dat)])) > 0.5)
+# acc = mean(y_test_pred == test_dat$icans_grade_3plus)
+# 
+# boot_acc = NULL
+# for(j in 1:1000){
+#   boot_idx = sample((1:nrow(test_dat)), nrow(test_dat), replace = TRUE)
+#   boot_acc[j] = mean(y_test_pred[boot_idx] == test_dat$icans_grade_3plus[boot_idx])
+# }
+# quantile(boot_acc, c(0.025, 0.975))
 ```
 
 # BART
 ```{r}
 library(bartMachine)
 set.seed(1024)
-bart_cv = bartMachineCV(X = x_train, y = as.factor(y_train),
-                        k_folds = 5, use_missing_data = TRUE)
-y_test_pred_bart = as.integer(predict(bart_cv, new_data = test_dat[,-ncol(test_dat)])> 0.5)
-
-acc_bart = mean(y_test_pred_bart == test_dat$icans_grade_3plus)
-
-boot_acc_bart = NULL
-for(j in 1:1000){
-  boot_idx = sample((1:nrow(test_dat)), nrow(test_dat), replace = TRUE)
-  boot_acc_bart[j] = mean(y_test_pred_bart[boot_idx] == test_dat$icans_grade_3plus[boot_idx])
+N = nrow(train_dat)
+num_folds = 5
+folds = cut(seq(1, N), breaks=num_folds, labels=FALSE)
+folds = folds[sample(1:N, size = N, replace = FALSE)]
+bart_para_tune = expand.grid(k = c(1,2,3,4),
+                             num_trees = c(20, 50, 100, 150),
+                             prob_rule_class = c(0.2, 0.3, 0.5),
+                             test_auc = 0)
+for(i in 1:nrow(bart_para_tune)){
+  cat(i,"\n")
+  num_trees = bart_para_tune$num_trees[i]
+  k = bart_para_tune$k[i]
+  prob_rule_class = bart_para_tune$prob_rule_class[i]
+  cv_auc = NULL
+  for(j in 1:num_folds){
+    cv_test_id = which(folds == j)
+    cv_x_train = x_train[-cv_test_id, ]
+    cv_y_train = y_train[-cv_test_id]
+    cv_x_test = x_train[cv_test_id, ]
+    cv_y_test = y_train[cv_test_id]
+    cv_bart = bartMachine(X = cv_x_train, y = as.factor(cv_y_train),
+                          num_trees = num_trees,
+                          k = k, prob_rule_class = prob_rule_class,
+                          use_missing_data = TRUE,
+                          verbose = FALSE,
+                          num_burn_in = 500,
+                          num_iterations_after_burn_in = 2000)
+    cv_y_pred = predict(cv_bart, new_data = cv_x_test)
+    cv_auc[j] = auc(cv_y_test, cv_y_pred)
+  }
+  bart_para_tune$test_auc[i] = mean(cv_auc)
 }
-quantile(boot_acc_bart, c(0.025, 0.975))
+
+bart_para_tune[which.max(bart_para_tune$test_auc),]
+
+bart_optimal = bartMachine(X = x_train, y = as.factor(y_train),
+                          num_trees = bart_para_tune$num_trees[which.max(bart_para_tune$test_auc)],
+                          k = bart_para_tune$k[which.max(bart_para_tune$test_auc)],
+                          prob_rule_class = bart_para_tune$prob_rule_class[which.max(bart_para_tune$test_auc)],
+                          use_missing_data = TRUE,
+                          num_burn_in = 500,
+                          num_iterations_after_burn_in = 2000)
+y_test_pred_bart = predict(bart_optimal, new_data = test_dat[, -ncol(test_dat)])
+roc_bart = roc(test_dat$icans_grade_3plus, y_test_pred_bart)
+roc_bart$auc
+ci.auc(roc_bart, method = "bootstrap")
+
+y_train_pred_bart = predict(bart_optimal, new_data = x_train)
+roc_train_bart = roc(train_dat$icans_grade_3plus, y_train_pred_bart)
+roc_train_bart$auc
+ci.auc(roc_train_bart, method = "bootstrap")
+
+opt_thre_bart = roc_train_bart$thresholds[which.max(roc_train_bart$sensitivities + roc_train_bart$specificities)]
+y_test_pred_label_bart = as.integer(y_test_pred_bart > opt_thre_bart)
+epi.tests(table(y_test_pred_label_bart, test_dat$icans_grade_3plus)[2:1,2:1], digits = 3)
+
+y_train_pred_label_bart = as.integer(y_train_pred_bart > opt_thre_bart)
+epi.tests(table(y_train_pred_label_bart, train_dat$icans_grade_3plus)[2:1,2:1], digits = 3)
+
+# bart_cv = bartMachineCV(X = x_train, y = as.factor(y_train),
+#                         k_folds = 5, use_missing_data = TRUE)
+# 
+# y_test_pred_bart = as.integer(predict(bart_cv, new_data = test_dat[,-ncol(test_dat)])> 0.5)
+# 
+# acc_bart = mean(y_test_pred_bart == test_dat$icans_grade_3plus)
+# 
+# boot_acc_bart = NULL
+# for(j in 1:1000){
+#   boot_idx = sample((1:nrow(test_dat)), nrow(test_dat), replace = TRUE)
+#   boot_acc_bart[j] = mean(y_test_pred_bart[boot_idx] == test_dat$icans_grade_3plus[boot_idx])
+# }
+# quantile(boot_acc_bart, c(0.025, 0.975))
+```
+
+
+# Random forest
+```{r}
+library(randomForestSRC)
+set.seed(1024)
+
+rf_para_tune = expand.grid(mtry = c(2,3,4,5),
+                           nodesize = c(1,3,5),
+                           splitrule = c("gini", "auc", "entropy"),
+                           sampprop = c(0.5, 0.632, 0.8),
+                           test_auc = 0,
+                           stringsAsFactors = FALSE)
+for(i in 1:nrow(rf_para_tune)){
+  cat(i, "\n")
+  mtry = rf_para_tune$mtry[i]
+  nodesize = rf_para_tune$nodesize[i]
+  splitrule = rf_para_tune$splitrule[i]
+  sampprop = rf_para_tune$sampprop[i]
+  cv_auc = NULL
+  for(j in 1:num_folds){
+    cv_test_id = which(folds == j)
+    cv_x_train = x_train[-cv_test_id, ]
+    cv_y_train = y_train[-cv_test_id]
+    cv_x_test = x_train[cv_test_id, ]
+    cv_y_test = y_train[cv_test_id]
+    cv_rf = rfsrc(icans_grade_3plus ~.,
+                  data = cbind(cv_x_train, icans_grade_3plus = as.factor(cv_y_train)),
+                  mtry = mtry, nodesize = nodesize,
+                  splitrule = splitrule, sampsize = round(sampprop * nrow(cv_x_train)),
+                  na.action = "na.impute")
+    cv_y_pred = predict(cv_rf, newdata = cv_x_test, na.action = "na.impute")$predicted[, "1"]
+    cv_auc[j] = auc(cv_y_test, cv_y_pred)
+  }
+  rf_para_tune$test_auc[i] = mean(cv_auc)
+}
+
+best_para_id = which.max(rf_para_tune$test_auc)
+rf_para_tune[best_para_id, ]
+rf_optimal = rfsrc(icans_grade_3plus ~.,
+                   data = cbind(x_train, icans_grade_3plus = as.factor(y_train)),
+                   mtry = rf_para_tune$mtry[best_para_id],
+                   nodesize = rf_para_tune$nodesize[best_para_id],
+                   splitrule = rf_para_tune$splitrule[best_para_id],
+                   sampsize = round(rf_para_tune$sampprop[best_para_id] * nrow(x_train)),
+                   na.action = "na.impute")
+y_test_pred_rf = predict(rf_optimal, newdata = test_dat[, -ncol(test_dat)],
+                         na.action = "na.impute")$predicted[, "1"]
+roc_rf = roc(test_dat$icans_grade_3plus, y_test_pred_rf)
+roc_rf$auc
+ci.auc(roc_rf, method = "bootstrap")
+
+y_train_pred_rf = predict(rf_optimal, newdata = x_train,
+                         na.action = "na.impute")$predicted[, "1"]
+roc_train_rf = roc(train_dat$icans_grade_3plus, y_train_pred_rf)
+roc_train_rf$auc
+ci.auc(roc_train_rf, method = "bootstrap")
+
+opt_thre_rf = roc_train_rf$thresholds[which.max(roc_train_rf$sensitivities + roc_train_rf$specificities)]
+y_test_pred_label_rf = as.integer(y_test_pred_rf > opt_thre_rf)
+epi.tests(table(y_test_pred_label_rf, test_dat$icans_grade_3plus)[2:1,2:1], digits = 3)
+
+y_train_pred_label_rf = as.integer(y_train_pred_rf > opt_thre_rf)
+epi.tests(table(y_train_pred_label_rf, train_dat$icans_grade_3plus)[2:1,2:1], digits = 3)
+```
+
+# Conditional random forest
+```{r}
+library(party)
+set.seed(1024)
+crf_para_tune = expand.grid(mtry = c(2,3,4,5),
+                            maxsurrogate = c(0, 1, 2, 3, 4),
+                            test_auc = 0)
+
+for(i in 1:nrow(crf_para_tune)){
+  cat(i, "\n")
+  mtry = crf_para_tune$mtry[i]
+  maxsurrogate = crf_para_tune$maxsurrogate[i]
+  cv_auc = NULL
+  for(j in 1:num_folds){
+    cv_test_id = which(folds == j)
+    cv_x_train = x_train[-cv_test_id, ]
+    cv_y_train = y_train[-cv_test_id]
+    cv_x_test = x_train[cv_test_id, ]
+    cv_y_test = y_train[cv_test_id]
+    cv_crf = cforest(icans_grade_3plus ~.,
+                     data = cbind(cv_x_train, icans_grade_3plus = as.factor(cv_y_train)),
+                     controls = cforest_unbiased(maxsurrogate = maxsurrogate,
+                                                 mtry = mtry))
+    cv_y_pred = sapply(predict(cv_crf, newdata = cv_x_test, type = "prob"), function(x){x[2]})
+    cv_auc[j] = auc(cv_y_test, cv_y_pred)
+  }
+  crf_para_tune$test_auc[i] = mean(cv_auc)
+}
+
+crf_best_para_id = which.max(crf_para_tune$test_auc)
+crf_para_tune[crf_best_para_id,]
+
+crf_optimal = cforest(icans_grade_3plus ~.,
+                   data = cbind(x_train, icans_grade_3plus = as.factor(y_train)),
+                   controls = cforest_unbiased(maxsurrogate = crf_para_tune$maxsurrogate[crf_best_para_id],
+                                                 mtry = crf_para_tune$mtry[crf_best_para_id]))
+y_test_pred_crf = sapply(predict(crf_optimal, newdata = test_dat[, -ncol(test_dat)],
+                                 type = "prob"), function(x){x[2]})
+roc_crf = roc(test_dat$icans_grade_3plus, y_test_pred_crf)
+roc_crf$auc
+ci.auc(roc_crf, method = "bootstrap")
+
+y_train_pred_crf = sapply(predict(crf_optimal, newdata = x_train,
+                                 type = "prob"), function(x){x[2]})
+roc_train_crf = roc(train_dat$icans_grade_3plus, y_train_pred_crf)
+roc_train_crf$auc
+ci.auc(roc_train_crf, method = "bootstrap")
+
+opt_thre_crf = roc_train_crf$thresholds[which.max(roc_train_crf$sensitivities + roc_train_crf$specificities)]
+y_test_pred_label_crf = as.integer(y_test_pred_crf > opt_thre_crf)
+epi.tests(table(y_test_pred_label_crf, test_dat$icans_grade_3plus)[2:1,2:1], digits = 3)
+
+y_train_pred_label_crf = as.integer(y_train_pred_crf > opt_thre_crf)
+epi.tests(table(y_train_pred_label_crf, train_dat$icans_grade_3plus)[2:1,2:1], digits = 3)
+```
+
+# Analyze results
+```{r}
+plot(smooth(roc_xgb), col = "blue")
+plot(smooth(roc_bart), col = "red", add = TRUE)
+plot(smooth(roc_rf), col = "green", add = TRUE)
+plot(smooth(roc_crf), col = "purple", add = TRUE)
+legend("bottomright", legend=c("XGBoost", "BART", "RF", "CondRF"),
+       col=c("blue", "red", "green", "purple"), lwd=2)
+
+
+plot(roc_train_xgb, col = "blue")
+plot(roc_train_bart, col = "red", add = TRUE)
+plot(roc_train_rf, col = "green", add = TRUE)
+plot(roc_train_crf, col = "purple", add = TRUE)
+legend("bottomright", legend=c("XGBoost", "BART", "RF", "CondRF"),
+       col=c("blue", "red", "green", "purple"), lwd=2)
 ```
