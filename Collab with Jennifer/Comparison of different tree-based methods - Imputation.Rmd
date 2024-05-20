@@ -311,4 +311,19 @@ legend("bottomright", legend=c("XGBoost", "BART", "RF", "CondRF"),
 library(gridExtra)
 imp_plot = grid.arrange(imp_plot_xgb, imp_plot_bart, imp_plot_rf, imp_plot_crf, nrow = 2, ncol = 2)
 ggsave("Importance plot.png", imp_plot, width = 12, height = 6)
+
+library(ggplot2)
+pred_score_trian = data.frame(pred_score = c(y_train_pred_xgb, y_train_pred_bart,
+                                             y_train_pred_rf, y_train_pred_crf),
+                              case = as.factor(rep(y_train, 4)),
+                              model = rep(c("XGBoost", "BART", "RF", "CondRF"), each = nrow(train_dat)))
+ggplot(pred_score_trian, aes(x = model, y = pred_score, color = case)) +
+  geom_boxplot()
+
+pred_score_trian = data.frame(pred_score = c(y_test_pred_xgb, y_test_pred_bart,
+                                             y_test_pred_rf, y_test_pred_crf),
+                              case = as.factor(rep(test_dat$icans_grade_3plus, 4)),
+                              model = rep(c("XGBoost", "BART", "RF", "CondRF"), each = nrow(test_dat)))
+ggplot(pred_score_trian, aes(x = model, y = pred_score, color = case)) +
+  geom_boxplot()
 ```

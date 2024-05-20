@@ -300,4 +300,19 @@ plot(roc_train_rf, col = "green", add = TRUE)
 plot(roc_train_crf, col = "purple", add = TRUE)
 legend("bottomright", legend=c("XGBoost", "BART", "RF", "CondRF"),
        col=c("blue", "red", "green", "purple"), lwd=2)
+
+library(ggplot2)
+pred_score_trian = data.frame(pred_score = c(y_train_pred_xgb, y_train_pred_bart,
+                                             y_train_pred_rf, y_train_pred_crf),
+                              case = as.factor(rep(y_train, 4)),
+                              model = rep(c("XGBoost", "BART", "RF", "CondRF"), each = nrow(train_dat)))
+ggplot(pred_score_trian, aes(x = model, y = pred_score, color = case)) +
+  geom_boxplot()
+
+pred_score_trian = data.frame(pred_score = c(y_test_pred_xgb, y_test_pred_bart,
+                                             y_test_pred_rf, y_test_pred_crf),
+                              case = as.factor(rep(test_dat$icans_grade_3plus, 4)),
+                              model = rep(c("XGBoost", "BART", "RF", "CondRF"), each = nrow(test_dat)))
+ggplot(pred_score_trian, aes(x = model, y = pred_score, color = case)) +
+  geom_boxplot()
 ```
