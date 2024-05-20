@@ -1,5 +1,5 @@
 ---
-title: "Comparison of different tree-based methods"
+title: "Comparison of different tree-based methods - RF Imputation"
 author: "Qi Wang"
 date: "`r Sys.Date()`"
 output: pdf_document
@@ -11,9 +11,17 @@ knitr::opts_chunk$set(echo = TRUE)
 
 ```{r}
 library(readxl)
-full_dat = read_xlsx("2024-03-25_datasplit.xlsx")
-train_dat = full_dat[which(full_dat$TestSet == 0), -c(10,12)]
-test_dat = full_dat[which(full_dat$TestSet == 1), -c(10,12)]
+library(missForest)
+library(ggplot2)
+set.seed(1024)
+full_dat = as.data.frame(read_xlsx("2024-03-25_datasplit.xlsx"))
+full_dat_to_be_imputed = full_dat[, -c(10,11,12)]
+full_dat_to_be_imputed$productInfusedBinaryBrexucel = as.factor(full_dat_to_be_imputed$productInfusedBinaryBrexucel)
+full_dat_imputed = cbind(missForest(full_dat_to_be_imputed)$ximp,
+                         icans_grade_3plus = full_dat$icans_grade_3plus)
+
+train_dat = full_dat_imputed[which(full_dat$TestSet == 0),]
+test_dat = full_dat_imputed[which(full_dat$TestSet == 1),]
 ```
 
 # XGBoost
@@ -27,28 +35,21 @@ n_boot = 1000
 x_train = train_dat[, -ncol(train_dat)]
 # x_train$productInfusedBinaryBrexucel = as.factor(x_train$productInfusedBinaryBrexucel)
 y_train = train_dat$icans_grade_3plus
-options(na.action='na.pass')
 x_train_df = model.matrix(~.-1, data = x_train)
 xgb_df = xgb.DMatrix(data = x_train_df, label = y_train)
 
 xgboost_para_tune = expand.grid(max_depth = c(3,5,7),
-                                eta = c(0.1,0.3,0.5),
-                                subsample = c(0.6, 0.8, 1),
-                                colsample_bytree = c(0.6, 0.8, 1),
                                 test_auc = 0,
                                 round = 0)
 for(iter in 1:nrow(xgboost_para_tune)){
-  params = list(max_depth = xgboost_para_tune$max_depth[iter],
-                eta = xgboost_para_tune$eta[iter],
-                subsample = xgboost_para_tune$subsample[iter],
-                colsample_bytree = xgboost_para_tune$colsample_bytree[iter])
-  bst = xgb.cv(params = params,
-             data = xgb_df, nrounds = 500,
-             objective = "binary:logistic", early_stopping_rounds = 10,
-             metrics = "auc",
-             nfold = 5,
-             maximize = TRUE,
-             verbose = FALSE)
+  params = list(max_depth = xgboost_para_tune$max_depth[iter])
+  bst = xgb.cv(params = params,,
+               data = xgb_df, nrounds = 500,
+               objective = "binary:logistic", early_stopping_rounds = 10,
+               metrics = "auc",
+               nfold = 5,
+               maximize = TRUE,
+               verbose = FALSE)
   xgboost_para_tune$test_auc[iter] = bst$evaluation_log$test_auc_mean[bst$best_iteration]
   xgboost_para_tune$round[iter] = bst$best_iteration
 }
@@ -58,9 +59,6 @@ xgboost_para_tune[which.max(xgboost_para_tune$test_auc),]
 bst_optimal = xgboost(data = xgb_df,
                       nrounds = xgboost_para_tune$round[which.max(xgboost_para_tune$test_auc)],
                       max.depth = xgboost_para_tune$max_depth[which.max(xgboost_para_tune$test_auc)],
-                      eta = xgboost_para_tune$eta[which.max(xgboost_para_tune$test_auc)],
-                      subsample = xgboost_para_tune$subsample[which.max(xgboost_para_tune$test_auc)],
-                      colsample.bytree = xgboost_para_tune$colsample_bytree[which.max(xgboost_para_tune$test_auc)],
                       objective = "binary:logistic")
 
 y_test_pred_xgb = predict(bst_optimal, newdata = model.matrix(~.-1, test_dat[,-ncol(test_dat)]))
@@ -82,49 +80,17 @@ y_train_pred_label_xgb = as.integer(y_train_pred_xgb > opt_thre_xgb)
 epi.tests(table(y_train_pred_label_xgb, train_dat$icans_grade_3plus)[2:1,2:1], digits = 3)
 
 
-# trian_size = nrow(x_train)
-# boot_acc_train_xgb = NULL
-# boot_acc_test_xgb = NULL
-# for(i in 1:n_boot){
-#   boot_id = sample(1:trian_size, trian_size, replace = TRUE)
-#   options(na.action='na.pass')
-#   boot_x_train_df = model.matrix(~.-1, data = x_train[boot_id,])
-#   boot_xgb_df = xgb.DMatrix(data = x_train_df, label = y_train[boot_id])
-#   boot_xgb = xgboost(data = boot_xgb_df,
-#                       nrounds = xgboost_para_tune$round[which.max(xgboost_para_tune$test_auc)],
-#                       max.depth = xgboost_para_tune$max_depth[which.max(xgboost_para_tune$test_auc)],
-#                       eta = xgboost_para_tune$eta[which.max(xgboost_para_tune$test_auc)],
-#                       subsample = xgboost_para_tune$subsample[which.max(xgboost_para_tune$test_auc)],
-#                       colsample.bytree = xgboost_para_tune$colsample_bytree[which.max(xgboost_para_tune$test_auc)],
-#                       objective = "binary:logistic",
-#                       verbose = 0)
-#   boot_y_train_pred_xgb = predict(boot_xgb, newdata = boot_x_train_df)
-#   boot_y_test_pred_xgb = predict(boot_xgb, newdata = model.matrix(~.-1, test_dat[,-ncol(test_dat)]))
-#   
-#   
-#   boot_y_train_pred_label_xgb = as.integer(boot_y_train_pred_xgb > opt_thre_xgb)
-#   boot_y_test_pred_label_xgb = as.integer(boot_y_test_pred_xgb > opt_thre_xgb)
-#   
-#   boot_acc_train_xgb[i] = mean(boot_y_train_pred_label_xgb == y_train[boot_id])
-#   boot_acc_test_xgb[i] = mean(boot_y_test_pred_label_xgb == test_dat$icans_grade_3plus)
-#   
-# }
-
 mean(y_train_pred_label_xgb == y_train)
-# quantile(boot_acc_train_xgb, c(0.025, 0.975))
 
 mean(y_test_pred_label_xgb == test_dat$icans_grade_3plus)
-# quantile(boot_acc_test_xgb, c(0.025, 0.975))
 
-# y_test_pred = as.integer(predict(bst_optimal, newdata = model.matrix(~.-1, test_dat[,-ncol(test_dat)])) > 0.5)
-# acc = mean(y_test_pred == test_dat$icans_grade_3plus)
-# 
-# boot_acc = NULL
-# for(j in 1:1000){
-#   boot_idx = sample((1:nrow(test_dat)), nrow(test_dat), replace = TRUE)
-#   boot_acc[j] = mean(y_test_pred[boot_idx] == test_dat$icans_grade_3plus[boot_idx])
-# }
-# quantile(boot_acc, c(0.025, 0.975))
+
+xgb_imp_df = xgb.importance(model = bst_optimal)
+imp_plot_xgb = ggplot(aes(x = Feature, y = Gain), data = xgb_imp_df) +
+  geom_bar(stat="identity")+
+  coord_flip()+
+  theme_minimal()+
+  ylab("XGBoost_Importance")
 ```
 
 # BART
@@ -135,15 +101,11 @@ N = nrow(train_dat)
 num_folds = 5
 folds = cut(seq(1, N), breaks=num_folds, labels=FALSE)
 folds = folds[sample(1:N, size = N, replace = FALSE)]
-bart_para_tune = expand.grid(k = c(1,2,3,4),
-                             num_trees = c(20, 50, 100, 150),
-                             prob_rule_class = c(0.2, 0.3, 0.5),
+bart_para_tune = expand.grid(num_trees = c(20, 50, 100, 150),
                              test_auc = 0)
 for(i in 1:nrow(bart_para_tune)){
   cat(i,"\n")
   num_trees = bart_para_tune$num_trees[i]
-  k = bart_para_tune$k[i]
-  prob_rule_class = bart_para_tune$prob_rule_class[i]
   cv_auc = NULL
   for(j in 1:num_folds){
     cv_test_id = which(folds == j)
@@ -153,8 +115,6 @@ for(i in 1:nrow(bart_para_tune)){
     cv_y_test = y_train[cv_test_id]
     cv_bart = bartMachine(X = cv_x_train, y = as.factor(cv_y_train),
                           num_trees = num_trees,
-                          k = k, prob_rule_class = prob_rule_class,
-                          use_missing_data = TRUE,
                           verbose = FALSE,
                           num_burn_in = 500,
                           num_iterations_after_burn_in = 2000)
@@ -168,9 +128,6 @@ bart_para_tune[which.max(bart_para_tune$test_auc),]
 
 bart_optimal = bartMachine(X = x_train, y = as.factor(y_train),
                           num_trees = bart_para_tune$num_trees[which.max(bart_para_tune$test_auc)],
-                          k = bart_para_tune$k[which.max(bart_para_tune$test_auc)],
-                          prob_rule_class = bart_para_tune$prob_rule_class[which.max(bart_para_tune$test_auc)],
-                          use_missing_data = TRUE,
                           num_burn_in = 500,
                           num_iterations_after_burn_in = 2000)
 y_test_pred_bart = predict(bart_optimal, new_data = test_dat[, -ncol(test_dat)])
@@ -193,19 +150,17 @@ epi.tests(table(y_train_pred_label_bart, train_dat$icans_grade_3plus)[2:1,2:1], 
 mean(y_train_pred_label_bart == y_train)
 mean(y_test_pred_label_bart == test_dat$icans_grade_3plus)
 
-# bart_cv = bartMachineCV(X = x_train, y = as.factor(y_train),
-#                         k_folds = 5, use_missing_data = TRUE)
-# 
-# y_test_pred_bart = as.integer(predict(bart_cv, new_data = test_dat[,-ncol(test_dat)])> 0.5)
-# 
-# acc_bart = mean(y_test_pred_bart == test_dat$icans_grade_3plus)
-# 
-# boot_acc_bart = NULL
-# for(j in 1:1000){
-#   boot_idx = sample((1:nrow(test_dat)), nrow(test_dat), replace = TRUE)
-#   boot_acc_bart[j] = mean(y_test_pred_bart[boot_idx] == test_dat$icans_grade_3plus[boot_idx])
-# }
-# quantile(boot_acc_bart, c(0.025, 0.975))
+bart_var_sel = var_selection_by_permute(bart_optimal, num_reps_for_avg = 10,
+                         num_permute_samples = 5,
+                         num_trees_for_permute = bart_para_tune$num_trees[which.max(bart_para_tune$test_auc)], 
+                         alpha = 0.05, plot = FALSE)
+
+imp_plot_bart = ggplot(aes(x = Feature, y = BART_Importance),
+                       data = data.frame(Feature = names(bart_var_sel$var_true_props_avg),
+                                         BART_Importance = bart_var_sel$var_true_props_avg)) +
+  geom_bar(stat="identity")+
+  coord_flip()+
+  theme_minimal()
 ```
 
 
@@ -216,16 +171,12 @@ set.seed(1024)
 
 rf_para_tune = expand.grid(mtry = c(2,3,4,5),
                            nodesize = c(1,3,5),
-                           splitrule = c("gini", "auc", "entropy"),
-                           sampprop = c(0.5, 0.632, 0.8),
                            test_auc = 0,
                            stringsAsFactors = FALSE)
 for(i in 1:nrow(rf_para_tune)){
   cat(i, "\n")
   mtry = rf_para_tune$mtry[i]
   nodesize = rf_para_tune$nodesize[i]
-  splitrule = rf_para_tune$splitrule[i]
-  sampprop = rf_para_tune$sampprop[i]
   cv_auc = NULL
   for(j in 1:num_folds){
     cv_test_id = which(folds == j)
@@ -235,10 +186,8 @@ for(i in 1:nrow(rf_para_tune)){
     cv_y_test = y_train[cv_test_id]
     cv_rf = rfsrc(icans_grade_3plus ~.,
                   data = cbind(cv_x_train, icans_grade_3plus = as.factor(cv_y_train)),
-                  mtry = mtry, nodesize = nodesize,
-                  splitrule = splitrule, sampsize = round(sampprop * nrow(cv_x_train)),
-                  na.action = "na.impute")
-    cv_y_pred = predict(cv_rf, newdata = cv_x_test, na.action = "na.impute")$predicted[, "1"]
+                  mtry = mtry, nodesize = nodesize,)
+    cv_y_pred = predict(cv_rf, newdata = cv_x_test)$predicted[, "1"]
     cv_auc[j] = auc(cv_y_test, cv_y_pred)
   }
   rf_para_tune$test_auc[i] = mean(cv_auc)
@@ -249,18 +198,13 @@ rf_para_tune[best_para_id, ]
 rf_optimal = rfsrc(icans_grade_3plus ~.,
                    data = cbind(x_train, icans_grade_3plus = as.factor(y_train)),
                    mtry = rf_para_tune$mtry[best_para_id],
-                   nodesize = rf_para_tune$nodesize[best_para_id],
-                   splitrule = rf_para_tune$splitrule[best_para_id],
-                   sampsize = round(rf_para_tune$sampprop[best_para_id] * nrow(x_train)),
-                   na.action = "na.impute")
-y_test_pred_rf = predict(rf_optimal, newdata = test_dat[, -ncol(test_dat)],
-                         na.action = "na.impute")$predicted[, "1"]
+                   nodesize = rf_para_tune$nodesize[best_para_id])
+y_test_pred_rf = predict(rf_optimal, newdata = test_dat[, -ncol(test_dat)])$predicted[, "1"]
 roc_rf = roc(test_dat$icans_grade_3plus, y_test_pred_rf)
 roc_rf$auc
 ci.auc(roc_rf, method = "bootstrap")
 
-y_train_pred_rf = predict(rf_optimal, newdata = x_train,
-                         na.action = "na.impute")$predicted[, "1"]
+y_train_pred_rf = predict(rf_optimal, newdata = x_train)$predicted[, "1"]
 roc_train_rf = roc(train_dat$icans_grade_3plus, y_train_pred_rf)
 roc_train_rf$auc
 ci.auc(roc_train_rf, method = "bootstrap")
@@ -274,6 +218,14 @@ epi.tests(table(y_train_pred_label_rf, train_dat$icans_grade_3plus)[2:1,2:1], di
 
 mean(y_train_pred_label_rf == y_train)
 mean(y_test_pred_label_rf == test_dat$icans_grade_3plus)
+
+imp_rf = vimp(rf_optimal, importance = "permute")
+
+imp_plot_rf = ggplot(aes(x = Feature, y = RF_Importance),
+                       data = data.frame(Feature = rownames(imp_rf$importance), RF_Importance = imp_rf$importance[, "all"])) +
+  geom_bar(stat="identity")+
+  coord_flip()+
+  theme_minimal()
 ```
 
 # Conditional random forest
@@ -281,13 +233,11 @@ mean(y_test_pred_label_rf == test_dat$icans_grade_3plus)
 library(party)
 set.seed(1024)
 crf_para_tune = expand.grid(mtry = c(2,3,4,5),
-                            maxsurrogate = c(0, 1, 2, 3, 4),
                             test_auc = 0)
 
 for(i in 1:nrow(crf_para_tune)){
   cat(i, "\n")
   mtry = crf_para_tune$mtry[i]
-  maxsurrogate = crf_para_tune$maxsurrogate[i]
   cv_auc = NULL
   for(j in 1:num_folds){
     cv_test_id = which(folds == j)
@@ -297,8 +247,7 @@ for(i in 1:nrow(crf_para_tune)){
     cv_y_test = y_train[cv_test_id]
     cv_crf = cforest(icans_grade_3plus ~.,
                      data = cbind(cv_x_train, icans_grade_3plus = as.factor(cv_y_train)),
-                     controls = cforest_unbiased(maxsurrogate = maxsurrogate,
-                                                 mtry = mtry))
+                     controls = cforest_unbiased(mtry = mtry))
     cv_y_pred = sapply(predict(cv_crf, newdata = cv_x_test, type = "prob"), function(x){x[2]})
     cv_auc[j] = auc(cv_y_test, cv_y_pred)
   }
@@ -310,8 +259,7 @@ crf_para_tune[crf_best_para_id,]
 
 crf_optimal = cforest(icans_grade_3plus ~.,
                    data = cbind(x_train, icans_grade_3plus = as.factor(y_train)),
-                   controls = cforest_unbiased(maxsurrogate = crf_para_tune$maxsurrogate[crf_best_para_id],
-                                                 mtry = crf_para_tune$mtry[crf_best_para_id]))
+                   controls = cforest_unbiased(mtry = crf_para_tune$mtry[crf_best_para_id]))
 y_test_pred_crf = sapply(predict(crf_optimal, newdata = test_dat[, -ncol(test_dat)],
                                  type = "prob"), function(x){x[2]})
 roc_crf = roc(test_dat$icans_grade_3plus, y_test_pred_crf)
@@ -333,6 +281,14 @@ epi.tests(table(y_train_pred_label_crf, train_dat$icans_grade_3plus)[2:1,2:1], d
 
 mean(y_train_pred_label_crf == y_train)
 mean(y_test_pred_label_crf == test_dat$icans_grade_3plus)
+
+crf_imp = varimp(crf_optimal, pre1.0_0 = TRUE)
+imp_plot_crf = ggplot(aes(x = Feature, y = CRF_Importance),
+                       data = data.frame(Feature = names(crf_imp),
+                                         CRF_Importance = crf_imp)) +
+  geom_bar(stat="identity")+
+  coord_flip()+
+  theme_minimal()
 ```
 
 # Analyze results
@@ -351,4 +307,8 @@ plot(roc_train_rf, col = "green", add = TRUE)
 plot(roc_train_crf, col = "purple", add = TRUE)
 legend("bottomright", legend=c("XGBoost", "BART", "RF", "CondRF"),
        col=c("blue", "red", "green", "purple"), lwd=2)
+
+library(gridExtra)
+imp_plot = grid.arrange(imp_plot_xgb, imp_plot_bart, imp_plot_rf, imp_plot_crf, nrow = 2, ncol = 2)
+ggsave("Importance plot.png", imp_plot, width = 12, height = 6)
 ```
